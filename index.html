@@ -388,7 +388,7 @@
 <script>
 // ===== CONFIG =====
 const CLIENT_ID = 'e8ef921c4c7741b3b8682634fd838b33';
-const REDIRECT_URI = 'https://www.soniqmusic.online/';
+const REDIRECT_URI = 'https://soniqmusic.online/';
 const SCOPES = 'playlist-modify-public playlist-modify-private user-read-private';
 
 // ===== STATE =====
@@ -397,33 +397,49 @@ let selectedGenres = [];
 let selectedMood = '';
 let currentTracks = [];
 
-// ===== AUTH =====
-function connectSpotify() {
-  const state = Math.random().toString(36).slice(2);
-  sessionStorage.setItem('oauth_state', state);
+// ===== AUTH PKCE =====
+async function genVerifier() {
+  const arr = new Uint32Array(56); crypto.getRandomValues(arr);
+  return Array.from(arr, n => n.toString(36)).join('').slice(0, 128);
+}
+async function genChallenge(v) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v));
+  return btoa(String.fromCharCode(...new Uint8Array(d))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+
+async function connectSpotify() {
+  const v = await genVerifier();
+  const c = await genChallenge(v);
+  sessionStorage.setItem('pkce', v);
   const params = new URLSearchParams({
-    response_type: 'token',
-    client_id: CLIENT_ID,
-    scope: SCOPES,
-    redirect_uri: REDIRECT_URI,
-    state,
-    show_dialog: true
+    client_id: CLIENT_ID, response_type: 'code',
+    redirect_uri: REDIRECT_URI, scope: SCOPES,
+    code_challenge_method: 'S256', code_challenge: c,
+    show_dialog: 'true'
   });
   window.location.href = 'https://accounts.spotify.com/authorize?' + params;
 }
 
-function handleCallback() {
-  const hash = window.location.hash.substring(1);
-  if (!hash) return;
-  const params = new URLSearchParams(hash);
-  const token = params.get('access_token');
-  if (token) {
-    accessToken = token;
-    sessionStorage.setItem('spotify_token', token);
-    window.history.replaceState({}, '', '/');
+async function handleCallback() {
+  const code = new URLSearchParams(location.search).get('code');
+  if (!code) return;
+  const v = sessionStorage.getItem('pkce');
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: CLIENT_ID, grant_type: 'authorization_code',
+      code, redirect_uri: REDIRECT_URI, code_verifier: v
+    })
+  });
+  const data = await res.json();
+  if (data.access_token) {
+    accessToken = data.access_token;
+    sessionStorage.setItem('spotify_token', accessToken);
+    sessionStorage.removeItem('pkce');
+    history.replaceState({}, '', '/');
     updateAuthUI(true);
     toast('Spotify connecté ✓', 'ok');
-
     const pending = sessionStorage.getItem('pending_generate');
     if (pending === '1') {
       sessionStorage.removeItem('pending_generate');
